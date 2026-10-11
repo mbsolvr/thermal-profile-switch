@@ -3,7 +3,7 @@ Description=Switch system power profile based on CPU temperature
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/thermal-profile-switch --high 45 --low 40
+ExecStart=%h/.local/bin/thermal-profile-switch --high 60 --low 50 --high-seconds 30 --low-seconds 120
 Restart=on-failure
 RestartSec=5
 

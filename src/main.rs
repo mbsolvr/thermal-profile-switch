@@ -18,6 +18,8 @@ struct Options {
     low: f64,
     high: f64,
     poll_seconds: u64,
+    high_seconds: u64,
+    low_seconds: u64,
     profile_check_seconds: u64,
     sensor: SensorChoice,
     list_sensors: bool,
@@ -38,6 +40,8 @@ fn usage() -> &'static str {
        --high CELSIUS       Upper threshold (default: 45)\n\
        --low CELSIUS        Lower threshold (default: 40)\n\
        --poll-seconds N     Check interval (default: 5)\n\
+       --high-seconds N     Time above --high before balanced (default: 30)\n\
+       --low-seconds N      Time below --low before power-saver (default: 120)\n\
        --profile-check-seconds N  Recheck the active profile (default: 60)\n\
        --sensor-type TYPE   Use the thermal zone with this type\n\
        --sensor-path PATH   Read one thermal zone temp file\n\
@@ -52,6 +56,8 @@ fn parse_options() -> Result<Options, String> {
         low: 40.0,
         high: 45.0,
         poll_seconds: 5,
+        high_seconds: 30,
+        low_seconds: 120,
         profile_check_seconds: 60,
         sensor: SensorChoice::Auto,
         list_sensors: false,
@@ -81,6 +87,20 @@ fn parse_options() -> Result<Options, String> {
                     .ok_or("--poll-seconds needs a value")?
                     .parse()
                     .map_err(|_| "--poll-seconds must be a positive integer")?;
+            }
+            "--high-seconds" => {
+                options.high_seconds =
+                    args.next()
+                        .ok_or("--high-seconds needs a value")?
+                        .parse()
+                        .map_err(|_| "--high-seconds must be a non-negative integer")?;
+            }
+            "--low-seconds" => {
+                options.low_seconds = args
+                    .next()
+                    .ok_or("--low-seconds needs a value")?
+                    .parse()
+                    .map_err(|_| "--low-seconds must be a non-negative integer")?;
             }
             "--profile-check-seconds" => {
                 options.profile_check_seconds = args
@@ -207,17 +227,56 @@ fn powerprofilesctl(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-fn check_once(
-    options: &Options,
-    last_checked: &mut Option<(&'static str, Instant)>,
-) -> Result<(), String> {
-    let reading = select_reading(&options.sensor)?;
-    let target = if reading.celsius > options.high {
+fn temperature_target(temperature: f64, options: &Options) -> Option<&'static str> {
+    if temperature > options.high {
         Some("balanced")
-    } else if reading.celsius < options.low {
+    } else if temperature < options.low {
         Some("power-saver")
     } else {
         None
+    }
+}
+
+fn stable_target(
+    target: Option<&'static str>,
+    pending: &mut Option<(&'static str, Instant)>,
+    now: Instant,
+    options: &Options,
+) -> Option<&'static str> {
+    let Some(target) = target else {
+        *pending = None;
+        return None;
+    };
+    let required_seconds = if target == "balanced" {
+        options.high_seconds
+    } else {
+        options.low_seconds
+    };
+    if required_seconds == 0 {
+        return Some(target);
+    }
+    match pending {
+        Some((previous, since)) if *previous == target => {
+            (now.duration_since(*since) >= Duration::from_secs(required_seconds)).then_some(target)
+        }
+        _ => {
+            *pending = Some((target, now));
+            None
+        }
+    }
+}
+
+fn check_once(
+    options: &Options,
+    pending: &mut Option<(&'static str, Instant)>,
+    last_checked: &mut Option<(&'static str, Instant)>,
+) -> Result<(), String> {
+    let reading = select_reading(&options.sensor)?;
+    let raw_target = temperature_target(reading.celsius, options);
+    let target = if options.once {
+        raw_target
+    } else {
+        stable_target(raw_target, pending, Instant::now(), options)
     };
     let Some(target) = target else {
         if options.once {
@@ -277,19 +336,23 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     let initial = select_reading(&options.sensor)?;
+    let mut pending = None;
     let mut last_checked = None;
     if !options.once {
         println!(
-            "monitoring {} ({}), balanced above {}°C, power-saver below {}°C, every {}s",
+            "monitoring {} ({}), balanced above {}°C for {}s, power-saver below {}°C for {}s, every {}s",
             initial.kind,
             initial.path.display(),
             options.high,
+            options.high_seconds,
             options.low,
+            options.low_seconds,
             options.poll_seconds
         );
     }
     loop {
-        if let Err(error) = check_once(&options, &mut last_checked) {
+        if let Err(error) = check_once(&options, &mut pending, &mut last_checked) {
+            pending = None;
             if options.once {
                 return Err(error);
             }
@@ -306,5 +369,104 @@ fn main() {
     if let Err(error) = run() {
         eprintln!("thermal-profile-switch: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options() -> Options {
+        Options {
+            low: 50.0,
+            high: 60.0,
+            poll_seconds: 5,
+            high_seconds: 30,
+            low_seconds: 120,
+            profile_check_seconds: 60,
+            sensor: SensorChoice::Auto,
+            list_sensors: false,
+            dry_run: true,
+            once: false,
+        }
+    }
+
+    #[test]
+    fn requires_continuous_time_above_high() {
+        let options = options();
+        let start = Instant::now();
+        let mut pending = None;
+        assert_eq!(temperature_target(60.0, &options), None);
+        assert_eq!(temperature_target(59.0, &options), None);
+        assert_eq!(
+            stable_target(Some("balanced"), &mut pending, start, &options),
+            None
+        );
+        assert_eq!(
+            stable_target(
+                Some("balanced"),
+                &mut pending,
+                start + Duration::from_secs(29),
+                &options
+            ),
+            None
+        );
+        assert_eq!(
+            stable_target(
+                None,
+                &mut pending,
+                start + Duration::from_secs(30),
+                &options
+            ),
+            None
+        );
+        assert_eq!(
+            stable_target(
+                Some("balanced"),
+                &mut pending,
+                start + Duration::from_secs(31),
+                &options
+            ),
+            None
+        );
+        assert_eq!(
+            stable_target(
+                Some("balanced"),
+                &mut pending,
+                start + Duration::from_secs(61),
+                &options
+            ),
+            Some("balanced")
+        );
+    }
+
+    #[test]
+    fn requires_continuous_time_below_low() {
+        let options = options();
+        let start = Instant::now();
+        let mut pending = None;
+        assert_eq!(temperature_target(50.0, &options), None);
+        assert_eq!(
+            stable_target(Some("power-saver"), &mut pending, start, &options),
+            None
+        );
+        assert_eq!(
+            stable_target(
+                Some("power-saver"),
+                &mut pending,
+                start + Duration::from_secs(119),
+                &options
+            ),
+            None
+        );
+        assert_eq!(
+            stable_target(
+                Some("power-saver"),
+                &mut pending,
+                start + Duration::from_secs(120),
+                &options
+            ),
+            Some("power-saver")
+        );
     }
 }

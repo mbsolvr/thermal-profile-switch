@@ -8,10 +8,13 @@ these changes as usual.
 
 By default, the tool switches to `balanced` **above** 45°C and to
 `power-saver` **below** 40°C. Between the thresholds, it leaves the current
-profile unchanged. It checks the temperature every 5 seconds. Outside the
-threshold band, it checks the active profile immediately and then at most once
-every 60 seconds. It runs `powerprofilesctl set` only when the active profile
-differs from the target.
+profile unchanged. To avoid switching on short temperature spikes, the
+temperature must remain above the high threshold for 30 seconds or below the
+low threshold for 120 seconds. A reading back inside the band resets that
+timer. It checks the temperature every 5 seconds. Once a threshold has held
+long enough, it checks the active profile and then rechecks at most once every
+60 seconds. It runs `powerprofilesctl set` only when the active profile differs
+from the target.
 
 ## Requirements
 
@@ -37,14 +40,17 @@ one file. A type is usually more stable than a zone number, which can change
 between boots.
 
 Set the thresholds and polling interval with, for example,
-`--high 58 --low 52 --poll-seconds 5`. The `--profile-check-seconds 60` option
+`--high 60 --low 50 --poll-seconds 5`. Use `--high-seconds 30` and
+`--low-seconds 120` to set how long a threshold must hold before switching.
+The `--profile-check-seconds 60` option
 controls how often the tool rechecks the active profile while the temperature
 remains outside the threshold band. A manual profile change in that state may
 be overridden at the next recheck. Within the band, manual changes are left
 alone until the temperature crosses a threshold.
 
-Use `--once` for a single check and `--dry-run` to preview decisions without
-changing the profile. If a sensor or `powerprofilesctl` becomes unavailable,
+Use `--once` for a single check (without the duration requirement) and
+`--dry-run` to preview decisions without changing the profile. If a sensor or
+`powerprofilesctl` becomes unavailable,
 the tool logs the error and retries on the next polling cycle.
 
 ## Install as a user service
@@ -53,9 +59,9 @@ Build the binary and install it in `~/.local/bin`. The service then runs
 independently of the source and `target/` directories.
 
 **Adjust the thresholds before enabling the service.** The included unit uses
-58°C / 52°C as an example for one laptop; these values are not universal. Edit
-`ExecStart` in `systemd/thermal-profile-switch.service` to suit your machine.
-Running the binary directly without arguments still uses 45°C / 40°C.
+60°C / 50°C and requires 30 seconds above 60°C or 120 seconds below 50°C.
+These values are not universal. Edit `ExecStart` in
+`systemd/thermal-profile-switch.service` to suit your machine.
 
 ```sh
 cargo build --release
