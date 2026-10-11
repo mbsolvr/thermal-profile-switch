@@ -1,0 +1,15 @@
+# Rust build output. Keep Cargo.lock for this executable application.
+/target/
+*.rs.bk
+
+# Local editor and workspace state.
+/.idea/
+/.vscode/
+*.swp
+*~
+.DS_Store
+
+# Local agent and credential directories.
+/.agents/
+/.aws/
+/.codex/

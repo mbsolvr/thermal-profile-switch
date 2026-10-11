@@ -1,0 +1,8 @@
+[package]
+name = "thermal-profile-switch"
+version = "0.1.0"
+edition = "2024"
+description = "Switch Linux power profiles at temperature thresholds"
+license = "MIT"
+
+[dependencies]

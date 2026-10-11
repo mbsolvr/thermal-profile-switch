@@ -1,0 +1,11 @@
+[Unit]
+Description=Switch system power profile based on CPU temperature
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/thermal-profile-switch --high 58 --low 52
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
